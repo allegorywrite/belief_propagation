@@ -1,0 +1,6 @@
+anydocgen/
+.claude/
+.vscode/
+venv/
+CLAUDE.md
+**/__pycache__/
