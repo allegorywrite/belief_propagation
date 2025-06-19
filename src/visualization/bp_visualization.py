@@ -199,12 +199,12 @@ class DynamicEdgeBPAnimation:
                 
                 # Draw edge between estimated positions
                 self.ax.plot([pos1[0], pos2[0]], [pos1[1], pos2[1]], 
-                           color='gray', linewidth=1.5, alpha=0.6)
+                           color='navy', linewidth=1.5, alpha=0.8)
                 
                 # Draw factor node at midpoint of edge
                 midpoint = (pos1 + pos2) / 2
-                self.ax.plot(midpoint[0], midpoint[1], 's', color='orange', markersize=6,
-                           markeredgecolor='darkorange', markeredgewidth=1, alpha=0.8)
+                self.ax.plot(midpoint[0], midpoint[1], 's', color='lightblue', markersize=16,
+                           markeredgecolor='navy', markeredgewidth=1, alpha=0.8)
     
     def compute_axis_limits(self, estimated_positions, margin_factor=0.15):
         """Compute appropriate axis limits based on node positions."""
@@ -280,8 +280,8 @@ class DynamicEdgeBPAnimation:
                 mean = belief.mean
                 cov = belief.covariance
                 
-                self.ax.plot(mean[0], mean[1], 'o', color='green', markersize=8,
-                           alpha=0.8, markeredgecolor='darkgreen', markeredgewidth=1)
+                self.ax.plot(mean[0], mean[1], 'o', color='lightblue', markersize=16,
+                           alpha=0.8, markeredgecolor='navy', markeredgewidth=1)
                 
                 # Draw uncertainty ellipse
                 try:
@@ -296,22 +296,22 @@ class DynamicEdgeBPAnimation:
                     height = max(height, 0.1)
                     
                     ellipse = Ellipse(mean, width, height, angle=angle,
-                                    fill=False, edgecolor='red', linewidth=1.5, alpha=0.7)
+                                    fill=True, facecolor='lightblue', edgecolor='none', alpha=0.4)
                     self.ax.add_patch(ellipse)
                 except Exception as e:
                     # Fallback ellipse if calculation fails
                     ellipse = Ellipse(mean, 0.2, 0.2, angle=0,
-                                    fill=False, edgecolor='red', linewidth=1.5, alpha=0.7)
+                                    fill=True, facecolor='lightblue', edgecolor='none', alpha=0.4)
                     self.ax.add_patch(ellipse)
             else:
                 # Node only has initial position - draw with initial uncertainty
                 est_pos = estimated_positions.get(var, self.positions[var])
-                self.ax.plot(est_pos[0], est_pos[1], 'o', color='green', markersize=8,
-                           alpha=0.6, markeredgecolor='darkgreen', markeredgewidth=1)
+                self.ax.plot(est_pos[0], est_pos[1], 'o', color='lightblue', markersize=16,
+                           alpha=0.6, markeredgecolor='navy', markeredgewidth=1)
                 
                 # Draw initial uncertainty ellipse
                 ellipse = Ellipse(est_pos, 0.3, 0.3, angle=0,
-                                fill=False, edgecolor='red', linewidth=1.5, alpha=0.5)
+                                fill=True, facecolor='lightblue', edgecolor='none', alpha=0.4)
                 self.ax.add_patch(ellipse)
     
     def animate_message_propagation(self, iteration):
@@ -401,8 +401,8 @@ class DynamicEdgeBPAnimation:
                 cov = belief.covariance
                 
                 # Draw node
-                self.ax.plot(pos[0], pos[1], 'o', color='green', markersize=8,
-                           alpha=0.8, markeredgecolor='darkgreen', markeredgewidth=1)
+                self.ax.plot(pos[0], pos[1], 'o', color='lightblue', markersize=16,
+                           alpha=0.8, markeredgecolor='navy', markeredgewidth=1)
                 
                 # Draw uncertainty ellipse
                 try:
@@ -415,7 +415,7 @@ class DynamicEdgeBPAnimation:
                     height = min(height, 0.5)
                     
                     ellipse = Ellipse(pos, width, height, angle=angle,
-                                    fill=False, edgecolor='red', linewidth=1.5, alpha=0.7)
+                                    fill=True, facecolor='lightblue', edgecolor='none', alpha=0.4)
                     self.ax.add_patch(ellipse)
                 except:
                     pass
@@ -436,10 +436,10 @@ class DynamicEdgeBPAnimation:
         print(f"• Variables: {len([n for n in self.G.nodes() if not n.startswith('f_') and not n.startswith('obs_')])}")
         print(f"• Fix single node: {'Yes' if self.fix_single_node else 'No'}")
         print("\nLegend:")
-        print("• Green circles: Current estimated positions")
-        print("• Red ellipses: Uncertainty")
-        print("• Gray lines: Edges between estimated positions")
-        print("• Orange squares: Factor nodes (on edge midpoints)")
+        print("• Light blue circles with navy edges: Current estimated positions")
+        print("• Light blue filled ellipses: Uncertainty")
+        print("• Navy lines: Edges between estimated positions")
+        print("• Light blue squares with navy edges: Factor nodes (on edge midpoints)")
         print("• Black X: True positions")
         print("• Blue/Red dots: Messages propagating along edges")
         
