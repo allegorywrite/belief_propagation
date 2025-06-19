@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
 """
-Animation and visualization module for Gaussian BP
+Visualization and animation module for Gaussian BP.
+Contains only visualization/animation logic, algorithms are in separate modules.
 """
 
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.patches import Ellipse, Circle
-from .gaussian_bp import GaussianBP
-from .gaussian_message import GaussianMessage
-from .graph_utils import GraphFactory, PositionManager
+from ..utils.bp_problem_setup import BPProblemSetup
+from ..utils.graph_utils import GraphFactory, PositionManager
+from ..gaussian_bp import GaussianBP
 
 
 class DynamicEdgeBPAnimation:
@@ -20,9 +21,9 @@ class DynamicEdgeBPAnimation:
         self.fix_single_node = fix_single_node
         
         # Factor weights
-        self.relative_weight = relative_weight      # Weight for relative position factors
-        self.smoothness_weight = smoothness_weight  # Weight for smoothness factors  
-        self.anchor_weight = anchor_weight          # Weight for anchor factors
+        self.relative_weight = relative_weight
+        self.smoothness_weight = smoothness_weight
+        self.anchor_weight = anchor_weight
         
         self.create_graph()
         self.setup_positions()
@@ -59,141 +60,24 @@ class DynamicEdgeBPAnimation:
         self.true_positions = self.position_manager.true_positions
     
     def setup_bp(self):
-        """Setup BP with relative position factors and smoothness factors."""
+        """Setup BP using the problem setup module."""
+        # Create BP instance first
         self.bp = GaussianBP(self.G)
-        self.bp.initialize_messages(dim=2)
         
-        # Set up both factor types
-        self.setup_relative_position_factors()
-        self.setup_smoothness_factors()
-        if self.fix_single_node:
-            self.add_single_anchor()
-    
-    def setup_priors(self):
-        """Set up prior factors for all variables."""
-        # Set weak priors for all variables (high uncertainty)
-        weak_precision = 0.01 * np.eye(2)  # Very weak
+        # Create problem setup with BP instance
+        self.problem_setup = BPProblemSetup(self.G, self.position_manager, self.bp)
+        self.problem_setup.set_factor_weights(
+            self.relative_weight, 
+            self.smoothness_weight, 
+            self.anchor_weight
+        )
         
-        for var_name in self.true_positions.keys():
-            prior_name = f'f_prior_{var_name}'
-            
-            # Add prior factor node if it doesn't exist
-            if prior_name not in self.G.nodes():
-                self.G.add_node(prior_name)
-                self.G.add_edge(var_name, prior_name)
-            
-            # Use noisy initial position as prior mean
-            prior_mean = self.positions[var_name]
-            precision, info = self.bp.create_prior_factor(prior_mean, weak_precision)
-            self.bp.set_factor_potential(prior_name, precision, info)
-    
-    def setup_relative_position_factors(self):
-        """Set up relative position factors between adjacent variables."""
-        # Relative position measurement precision (weighted by relative_weight)
-        base_precision = np.array([[1.0, 0.0], [0.0, 1.0]])
-        relative_precision = self.relative_weight * base_precision
-        
-        for factor_node in self.G.nodes():
-            if factor_node.startswith('f_rel_') or (factor_node.startswith('f_') and not factor_node.startswith('f_prior')):
-                # Get connected variables
-                connected_vars = [n for n in self.G.neighbors(factor_node) 
-                                if not factor_node.startswith('obs_')]
-                
-                if len(connected_vars) == 2:
-                    var1, var2 = connected_vars
-                    
-                    # True relative position measurement
-                    true_pos1 = self.true_positions.get(var1, np.zeros(2))
-                    true_pos2 = self.true_positions.get(var2, np.zeros(2))
-                    true_relative = true_pos2 - true_pos1
-                    
-                    # Create linear factor for relative position constraint
-                    # Measurement: z = x2 - x1 (relative position)
-                    # Jacobian: [-I, I] (2x4 matrix)
-                    jacobian = np.array([[-1.0, 0.0, 1.0, 0.0],
-                                       [0.0, -1.0, 0.0, 1.0]])
-                    
-                    # Measurement is the true relative position (with possible noise)
-                    measurement = true_relative
-                    
-                    precision, info = self.bp.create_linear_factor(
-                        measurement, relative_precision, jacobian
-                    )
-                    self.bp.set_factor_potential(factor_node, precision, info)
-    
-    def add_single_anchor(self):
-        """Add single anchor point for reference frame (only when fix_single_node=True)."""
-        corners = self.position_manager.get_observation_nodes(self.fix_single_node)
-        
-        if corners:
-            anchor_node = corners[0]  # Use first node as anchor
-            if anchor_node in self.true_positions:
-                obs_node = f'obs_{anchor_node}'
-                self.G.add_node(obs_node)
-                self.G.add_edge(anchor_node, obs_node)
-                
-                true_pos = self.true_positions[anchor_node]
-                
-                # Single anchor with very high precision to fix reference frame
-                obs_precision = self.anchor_weight * np.eye(2)
-                
-                precision, info = self.bp.create_prior_factor(true_pos, obs_precision)
-                self.bp.set_factor_potential(obs_node, precision, info)
-    
-    def setup_smoothness_factors(self):
-        """Set up smoothness factors that encourage minimal changes in estimated relative positions."""
-        # Smoothness precision (weighted by smoothness_weight)
-        base_precision = np.array([[1.0, 0.0], [0.0, 1.0]])
-        smoothness_precision = self.smoothness_weight * base_precision
-        
-        # Add smoothness factors for each pair of adjacent variables
-        # First collect all relevant factor nodes to avoid changing graph during iteration
-        relevant_factors = []
-        for factor_node in list(self.G.nodes()):
-            if factor_node.startswith('f_rel_') or (factor_node.startswith('f_') and not factor_node.startswith('f_prior') and not factor_node.startswith('obs_')):
-                # Get connected variables
-                connected_vars = [n for n in self.G.neighbors(factor_node) 
-                                if not n.startswith('obs_') and not n.startswith('f_')]
-                
-                if len(connected_vars) == 2:
-                    relevant_factors.append((factor_node, connected_vars))
-        
-        # Now add smoothness factors
-        smoothness_factor_count = 0
-        for factor_node, (var1, var2) in relevant_factors:
-            # Current estimated relative position (from initial noisy positions)
-            current_pos1 = self.positions.get(var1, np.zeros(2))
-            current_pos2 = self.positions.get(var2, np.zeros(2))
-            estimated_relative = current_pos2 - current_pos1
-            
-            # Create smoothness factor node
-            smoothness_factor = f'f_smooth_{smoothness_factor_count}'
-            self.G.add_node(smoothness_factor)
-            self.G.add_edge(var1, smoothness_factor)
-            self.G.add_edge(var2, smoothness_factor)
-            
-            # Create linear factor for smoothness constraint
-            # Measurement: z = x2 - x1 (maintain current estimated relative position)
-            # Jacobian: [-I, I] (2x4 matrix)
-            jacobian = np.array([[-1.0, 0.0, 1.0, 0.0],
-                               [0.0, -1.0, 0.0, 1.0]])
-            
-            # Measurement is the current estimated relative position
-            measurement = estimated_relative
-            
-            precision, info = self.bp.create_linear_factor(
-                measurement, smoothness_precision, jacobian
-            )
-            self.bp.set_factor_potential(smoothness_factor, precision, info)
-            
-            # Set position for smoothness factor (offset from relative position factor)
-            if var1 in self.positions and var2 in self.positions:
-                pos1 = self.positions[var1]
-                pos2 = self.positions[var2]
-                # Place smoothness factor slightly offset from midpoint
-                self.positions[smoothness_factor] = (pos1 + pos2) / 2 + np.array([0.0, 0.3])
-            
-            smoothness_factor_count += 1
+        # Setup complete problem
+        self.bp = self.problem_setup.setup_complete_problem(
+            fix_single_node=self.fix_single_node,
+            include_smoothness=True,
+            include_priors=False
+        )
     
     def get_current_estimated_positions(self):
         """Get current estimated positions of all variables."""
@@ -323,15 +207,7 @@ class DynamicEdgeBPAnimation:
                            markeredgecolor='darkorange', markeredgewidth=1, alpha=0.8)
     
     def compute_axis_limits(self, estimated_positions, margin_factor=0.15):
-        """Compute appropriate axis limits based on node positions.
-        
-        Args:
-            estimated_positions: Dictionary of current estimated positions
-            margin_factor: Fraction of range to add as margin
-            
-        Returns:
-            tuple: (x_min, x_max, y_min, y_max)
-        """
+        """Compute appropriate axis limits based on node positions."""
         # Combine true positions and estimated positions for comprehensive bounds
         all_positions = dict(self.true_positions)
         if estimated_positions:
@@ -504,118 +380,6 @@ class DynamicEdgeBPAnimation:
         plt.draw()
         plt.pause(self.pause_time * 2)
     
-    def show_initial_state(self):
-        """Show initial state with all noisy positions before BP starts."""
-        estimated_positions = {}
-        
-        # Use only initial noisy positions (no BP beliefs yet)
-        for var in self.true_positions.keys():
-            estimated_positions[var] = self.positions[var]
-        
-        self.draw_base_elements('Initial State - All Nodes with Noisy Positions', estimated_positions)
-        
-        # Draw all initial positions as blue circles
-        for var in self.true_positions.keys():
-            pos = self.positions[var]
-            self.ax.plot(pos[0], pos[1], 'o', color='blue', markersize=8,
-                       alpha=0.7, markeredgecolor='darkblue', markeredgewidth=1)
-        
-        # Add status info
-        self.ax.text(0.02, 0.98, 'Initial noisy positions\n(before BP starts)',
-                    transform=self.ax.transAxes, fontsize=10, verticalalignment='top',
-                    bbox=dict(boxstyle='round', facecolor='lightblue', alpha=0.8))
-        
-        plt.draw()
-        plt.pause(self.pause_time * 4)  # Show longer
-    
-    def initialize_bp_beliefs(self):
-        """Initialize all variable nodes with weak priors at their initial positions."""
-        weak_precision = 1e-4 * np.eye(2)
-        
-        for var_name in self.true_positions.keys():
-            # Initialize belief at the initial noisy position
-            initial_pos = self.positions[var_name]
-            self.bp.beliefs[var_name] = GaussianMessage(initial_pos, weak_precision)
-    
-    def run_animation(self):
-        """Run the complete animation demonstration."""
-        print(f"=== Gaussian BP with Message Propagation ({self.graph_type}) ===")
-        print(f"• Graph type: {self.graph_type}")
-        print(f"• Variables: {len([n for n in self.G.nodes() if not n.startswith('f_') and not n.startswith('obs_')])}")
-        print(f"• Fix single node: {'Yes' if self.fix_single_node else 'No'}")
-        print("\nLegend:")
-        print("• Green circles: Current estimated positions")
-        print("• Red ellipses: Uncertainty")
-        print("• Gray lines: Edges between estimated positions")
-        print("• Orange squares: Factor nodes (on edge midpoints)")
-        print("• Black X: True positions")
-        print("• Blue/Red dots: Messages propagating along edges")
-        
-        # BP is already initialized in setup_bp()
-        # Initialize all beliefs with initial positions and moderate uncertainty
-        large_precision = 2.0 * np.eye(2)
-        for var_name in self.true_positions.keys():
-            initial_pos = self.positions[var_name]
-            self.bp.beliefs[var_name] = GaussianMessage(initial_pos, large_precision)
-        
-        # Show initial state
-        self.draw_current_state("Initial State", 0, 0.0)
-        
-        max_iterations = 8
-        
-        try:
-            for iteration in range(max_iterations):
-                print(f"\nIteration {iteration + 1}")
-                
-                # Animate message propagation
-                self.animate_message_propagation(iteration + 1)
-                
-                # Update messages
-                change = self.bp.update_messages()
-                print(f"  Message change: {change:.6f}")
-                
-                # Debug: Show which factors are active
-                if iteration == 0:  # Only show on first iteration
-                    print(f"  Active factors:")
-                    for factor in self.bp.factor_potentials:
-                        precision = self.bp.factor_potentials[factor]['precision']
-                        max_precision = np.max(precision)
-                        print(f"    {factor}: max_precision={max_precision:.6f}")
-                
-                # Update beliefs
-                self.bp.compute_beliefs()
-                
-                # Animate belief update
-                self.animate_belief_update(iteration + 1)
-                
-                # Calculate error
-                total_error = 0.0
-                for var, true_pos in self.true_positions.items():
-                    if var in self.bp.beliefs:
-                        estimated = self.bp.beliefs[var].mean
-                        error = np.linalg.norm(estimated - true_pos)
-                        total_error += error
-                
-                print(f"  Total error: {total_error:.3f}")
-                
-                # Update convergence plots
-                self.update_convergence_plots(iteration + 1, change)
-                
-                # Show iteration result
-                self.show_iteration_result(iteration + 1, total_error)
-                
-                # Check convergence
-                # if change < 1e-6:
-                #     print("  Converged!")
-                #     break
-            
-            print("Animation complete! Close window to exit.")
-            plt.show(block=True)
-            
-        except KeyboardInterrupt:
-            print("\nAnimation interrupted by user")
-            plt.show(block=True)
-    
     def draw_current_state(self, title, iteration, error):
         """Draw current state with all nodes and uncertainties."""
         # Get current estimated positions
@@ -664,3 +428,70 @@ class DynamicEdgeBPAnimation:
         
         plt.draw()
         plt.pause(1.0)  # Pause to see each iteration
+    
+    def run_animation(self):
+        """Run the complete animation demonstration."""
+        print(f"=== Gaussian BP with Message Propagation ({self.graph_type}) ===")
+        print(f"• Graph type: {self.graph_type}")
+        print(f"• Variables: {len([n for n in self.G.nodes() if not n.startswith('f_') and not n.startswith('obs_')])}")
+        print(f"• Fix single node: {'Yes' if self.fix_single_node else 'No'}")
+        print("\nLegend:")
+        print("• Green circles: Current estimated positions")
+        print("• Red ellipses: Uncertainty")
+        print("• Gray lines: Edges between estimated positions")
+        print("• Orange squares: Factor nodes (on edge midpoints)")
+        print("• Black X: True positions")
+        print("• Blue/Red dots: Messages propagating along edges")
+        
+        # Show initial state
+        self.draw_current_state("Initial State", 0, 0.0)
+        
+        max_iterations = 8
+        
+        try:
+            for iteration in range(max_iterations):
+                print(f"\nIteration {iteration + 1}")
+                
+                # Animate message propagation
+                self.animate_message_propagation(iteration + 1)
+                
+                # Update messages
+                change = self.bp.update_messages()
+                print(f"  Message change: {change:.6f}")
+                
+                # Debug: Show which factors are active
+                if iteration == 0:  # Only show on first iteration
+                    print(f"  Active factors:")
+                    for factor in self.bp.factor_potentials:
+                        precision = self.bp.factor_potentials[factor]['precision']
+                        max_precision = np.max(precision)
+                        print(f"    {factor}: max_precision={max_precision:.6f}")
+                
+                # Update beliefs
+                self.bp.compute_beliefs()
+                
+                # Animate belief update
+                self.animate_belief_update(iteration + 1)
+                
+                # Calculate error
+                total_error = 0.0
+                for var, true_pos in self.true_positions.items():
+                    if var in self.bp.beliefs:
+                        estimated = self.bp.beliefs[var].mean
+                        error = np.linalg.norm(estimated - true_pos)
+                        total_error += error
+                
+                print(f"  Total error: {total_error:.3f}")
+                
+                # Update convergence plots
+                self.update_convergence_plots(iteration + 1, change)
+                
+                # Show iteration result
+                self.show_iteration_result(iteration + 1, total_error)
+            
+            print("Animation complete! Close window to exit.")
+            plt.show(block=True)
+            
+        except KeyboardInterrupt:
+            print("\nAnimation interrupted by user")
+            plt.show(block=True)

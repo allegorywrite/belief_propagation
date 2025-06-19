@@ -5,7 +5,7 @@ Refactored implementation using modular design
 """
 
 import sys
-from .animation import DynamicEdgeBPAnimation
+from src.visualization import DynamicEdgeBPAnimation
 
 
 def main():

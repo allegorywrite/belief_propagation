@@ -6,6 +6,18 @@ Gaussian Belief Propagation algorithm implementation
 import numpy as np
 import networkx as nx
 from .gaussian_message import GaussianMessage
+from .utils.linear_algebra_utils import (
+    schur_complement_marginalization,
+    regularize_precision_matrix,
+    safe_precision_to_mean,
+    combine_gaussian_messages
+)
+from .utils.factor_utils import (
+    create_linear_factor,
+    create_prior_factor,
+    create_range_bearing_factor,
+    compute_range_bearing
+)
 
 
 class GaussianBP:
@@ -24,81 +36,6 @@ class GaussianBP:
             'precision': precision,
             'information': information_vector
         }
-    
-    def create_linear_factor(self, measurement: np.ndarray, measurement_precision: np.ndarray,
-                           jacobian: np.ndarray, residual_offset: np.ndarray = None) -> tuple:
-        """Create factor potential for linear measurement function.
-        
-        Based on paper equations (11-12):
-        η_f = A^T Λ_s (z - b)
-        Λ_f = A^T Λ_s A
-        
-        Args:
-            measurement: observed measurement z
-            measurement_precision: measurement precision Λ_s
-            jacobian: measurement jacobian A  
-            residual_offset: offset b (default: zero)
-        
-        Returns:
-            (precision_matrix, information_vector)
-        """
-        if residual_offset is None:
-            residual_offset = np.zeros_like(measurement)
-            
-        # Compute factor precision: Λ_f = A^T Λ_s A
-        factor_precision = jacobian.T @ measurement_precision @ jacobian
-        
-        # Compute factor information: η_f = A^T Λ_s (z - b)
-        factor_information = jacobian.T @ measurement_precision @ (measurement - residual_offset)
-        
-        return factor_precision, factor_information
-    
-    def create_range_bearing_factor(self, robot1_pos: np.ndarray, robot2_pos: np.ndarray,
-                                  measurement: np.ndarray, measurement_precision: np.ndarray) -> tuple:
-        """Create factor for range-bearing measurement between two robots.
-        
-        Args:
-            robot1_pos: current estimate of robot 1 position (linearization point)
-            robot2_pos: current estimate of robot 2 position 
-            measurement: [range, bearing] measurement
-            measurement_precision: 2x2 precision matrix for measurement
-            
-        Returns:
-            (4x4 precision matrix, 4x1 information vector)
-        """
-        # Compute expected measurement h(x1, x2)
-        diff = robot2_pos - robot1_pos
-        expected_range = np.linalg.norm(diff)
-        expected_bearing = np.arctan2(diff[1], diff[0])
-        expected_measurement = np.array([expected_range, expected_bearing])
-        
-        # Compute Jacobian of h(x1, x2) = [||x2-x1||, atan2(y2-y1, x2-x1)]
-        if expected_range > 1e-6:  # Avoid division by zero
-            # ∂range/∂x1 = -(x2-x1)/||x2-x1||, ∂range/∂x2 = (x2-x1)/||x2-x1||
-            range_grad = diff / expected_range
-            
-            # ∂bearing/∂x1, ∂bearing/∂x2
-            dist_sq = expected_range ** 2
-            bearing_grad_x1 = np.array([diff[1], -diff[0]]) / dist_sq
-            bearing_grad_x2 = -bearing_grad_x1
-            
-            # Jacobian matrix: 2x4 [∂h/∂x1, ∂h/∂x2]
-            jacobian = np.array([
-                [-range_grad[0], -range_grad[1], range_grad[0], range_grad[1]],
-                [bearing_grad_x1[0], bearing_grad_x1[1], bearing_grad_x2[0], bearing_grad_x2[1]]
-            ])
-        else:
-            # Fallback for very small distances
-            jacobian = np.array([
-                [-1.0, 0.0, 1.0, 0.0],
-                [0.0, -1.0, 0.0, 1.0]
-            ])
-            
-        # Residual offset b = h(x0) - J*x0 where x0 = [x1; x2]
-        state_vector = np.concatenate([robot1_pos, robot2_pos])
-        residual_offset = expected_measurement - jacobian @ state_vector
-        
-        return self.create_linear_factor(measurement, measurement_precision, jacobian, residual_offset)
     
     def initialize_messages(self, dim: int = 2):
         """Initialize all messages to uniform (zero precision)."""
@@ -136,38 +73,11 @@ class GaussianBP:
                     precision_sum += msg.precision
                     information_sum += msg.precision @ msg.mean
         
-        # Add small regularization to prevent singular matrices
-        precision_sum += 1e-8 * np.eye(precision_sum.shape[0])
-        
-        # Convert back to mean form for message
-        try:
-            mean = np.linalg.solve(precision_sum, information_sum)
-        except np.linalg.LinAlgError:
-            # Fallback for singular matrices
-            dim = getattr(self, 'variable_dim', 2)
-            return GaussianMessage(np.zeros(dim), 1e-6 * np.eye(dim))
+        # Regularize and convert to mean form
+        precision_sum = regularize_precision_matrix(precision_sum)
+        mean = safe_precision_to_mean(precision_sum, information_sum)
         
         return GaussianMessage(mean, precision_sum)
-    
-    def compute_range_bearing(self, pos1: np.ndarray, pos2: np.ndarray) -> np.ndarray:
-        """Compute range-bearing measurement h(x1, x2) = [r, b]"""
-        diff = pos2 - pos1
-        range_val = np.linalg.norm(diff)
-        bearing = np.arctan2(diff[1], diff[0])
-        return np.array([range_val, bearing])
-    
-    def create_prior_factor(self, prior_mean: np.ndarray, prior_precision: np.ndarray) -> tuple:
-        """Create a unary prior factor.
-        
-        Args:
-            prior_mean: prior mean μ
-            prior_precision: prior precision Λ
-            
-        Returns:
-            (precision_matrix, information_vector)
-        """
-        # For prior factor: Λ_f = Λ, η_f = Λ * μ
-        return prior_precision, prior_precision @ prior_mean
     
     def factor_to_variable_message(self, factor_node: str, var_node: str) -> GaussianMessage:
         """Compute factor-to-variable message using proper marginalization.
@@ -190,12 +100,8 @@ class GaussianBP:
         
         # Case 1: Unary factor (only connected to target variable)
         if not other_vars:
-            try:
-                mean = np.linalg.solve(factor_precision, factor_info)
-                return GaussianMessage(mean, factor_precision)
-            except np.linalg.LinAlgError:
-                dim = getattr(self, 'variable_dim', 2)
-                return GaussianMessage(np.zeros(dim), 1e-6 * np.eye(dim))
+            mean = safe_precision_to_mean(factor_precision, factor_info)
+            return GaussianMessage(mean, factor_precision)
         
         # Case 2: Binary factor (connected to target + one other variable)
         if len(other_vars) == 1:
@@ -207,68 +113,41 @@ class GaussianBP:
             var_idx = all_vars.index(var_node)
             other_idx = all_vars.index(other_var)
             
-            # For NxN precision matrix representing variables
+            # Use Schur complement marginalization for binary factors
             var_dim = getattr(self, 'variable_dim', 2)
             expected_size = var_dim * 2  # Two variables
             if factor_precision.shape[0] == expected_size:
-                # Block structure: [[P11, P12], [P21, P22]]
-                P11 = factor_precision[0:var_dim, 0:var_dim]
-                P12 = factor_precision[0:var_dim, var_dim:2*var_dim] 
-                P21 = factor_precision[var_dim:2*var_dim, 0:var_dim]
-                P22 = factor_precision[var_dim:2*var_dim, var_dim:2*var_dim]
-                
-                eta1 = factor_info[0:var_dim]
-                eta2 = factor_info[var_dim:2*var_dim]
-                
-                # Determine which variable to marginalize out (other_var) and which to keep (var_node)
-                if var_idx == 0:  # Target variable is first, marginalize second
-                    if msg_from_other is not None:
-                        P22_aug = P22 + msg_from_other.precision
-                        eta2_aug = eta2 + msg_from_other.precision @ msg_from_other.mean
-                    else:
-                        P22_aug = P22 + 1e-6 * np.eye(var_dim)
-                        eta2_aug = eta2
-                    
-                    # Keep first block, marginalize second
-                    P_keep, P_cross, P_marg = P11, P12, P22_aug
-                    eta_keep, eta_marg = eta1, eta2_aug
-                    
-                else:  # Target variable is second, marginalize first
-                    if msg_from_other is not None:
-                        P11_aug = P11 + msg_from_other.precision
-                        eta1_aug = eta1 + msg_from_other.precision @ msg_from_other.mean
-                    else:
-                        P11_aug = P11 + 1e-6 * np.eye(var_dim)
-                        eta1_aug = eta1
-                    
-                    # Keep second block, marginalize first 
-                    P_keep, P_cross, P_marg = P22, P21, P11_aug
-                    eta_keep, eta_marg = eta2, eta1_aug
+                # Augment factor potential with incoming message
+                if msg_from_other is not None:
+                    if var_idx == 0:  # Target variable is first, add message to second block
+                        factor_precision[var_dim:2*var_dim, var_dim:2*var_dim] += msg_from_other.precision
+                        factor_info[var_dim:2*var_dim] += msg_from_other.precision @ msg_from_other.mean
+                    else:  # Target variable is second, add message to first block
+                        factor_precision[0:var_dim, 0:var_dim] += msg_from_other.precision
+                        factor_info[0:var_dim] += msg_from_other.precision @ msg_from_other.mean
                 
                 # Marginalize using Schur complement
                 try:
-                    P_marg_inv = np.linalg.inv(P_marg)
-                    marginal_precision = P_keep - P_cross @ P_marg_inv @ P_cross.T
-                    marginal_info = eta_keep - P_cross @ P_marg_inv @ eta_marg
+                    keep_first = (var_idx == 0)
+                    marginal_precision, marginal_info = schur_complement_marginalization(
+                        factor_precision, factor_info, var_dim, keep_first
+                    )
                     
-                    # Add regularization
-                    marginal_precision += 1e-8 * np.eye(marginal_precision.shape[0])
-                    marginal_mean = np.linalg.solve(marginal_precision, marginal_info)
+                    # Regularize and convert to mean
+                    marginal_precision = regularize_precision_matrix(marginal_precision)
+                    marginal_mean = safe_precision_to_mean(marginal_precision, marginal_info)
                     
                     return GaussianMessage(marginal_mean, marginal_precision)
                     
-                except np.linalg.LinAlgError:
+                except Exception:
                     # Fallback for numerical issues
                     dim = getattr(self, 'variable_dim', 2)
                     return GaussianMessage(np.zeros(dim), 1e-6 * np.eye(dim))
             
             # Fallback for other matrix sizes
-            try:
-                mean = np.linalg.solve(factor_precision, factor_info)
-                return GaussianMessage(mean[:var_dim], factor_precision[:var_dim, :var_dim])
-            except np.linalg.LinAlgError:
-                dim = getattr(self, 'variable_dim', 2)
-                return GaussianMessage(np.zeros(dim), 1e-6 * np.eye(dim))
+            var_dim = getattr(self, 'variable_dim', 2)
+            mean = safe_precision_to_mean(factor_precision, factor_info)
+            return GaussianMessage(mean[:var_dim], factor_precision[:var_dim, :var_dim])
         
         # Case 3: Higher-order factors (not implemented yet)
         dim = getattr(self, 'variable_dim', 2)
@@ -352,8 +231,8 @@ class GaussianBP:
                             information_sum += msg.precision @ msg.mean
                 
                 if precision_sum is not None:
-                    precision_sum += 1e-8 * np.eye(precision_sum.shape[0])
-                    mean = np.linalg.solve(precision_sum, information_sum)
+                    precision_sum = regularize_precision_matrix(precision_sum)
+                    mean = safe_precision_to_mean(precision_sum, information_sum)
                     self.beliefs[node] = GaussianMessage(mean, precision_sum)
                 else:
                     # No messages received - set to weak prior

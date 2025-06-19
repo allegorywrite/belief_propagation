@@ -1,5 +1,24 @@
 # Gaussian Belief Propagation Implementation
 
+## Project Structure
+
+```
+belief_propagation/
+├── main.py                           # Main entry point
+├── src/
+│   ├── gaussian_bp.py                # Core BP algorithm
+│   ├── gaussian_message.py           # Gaussian message data structure
+│   ├── utils/                        # Algorithm utilities
+│   │   ├── linear_algebra_utils.py   # Schur complement & matrix operations
+│   │   ├── factor_utils.py           # Factor creation utilities
+│   │   ├── graph_utils.py            # Graph topology creation
+│   │   └── bp_problem_setup.py       # BP problem configuration
+│   └── visualization/                # Visualization & animation
+│       └── bp_visualization.py       # Interactive BP animation
+└── anydocgen/                        # Documentation & references
+    └── refs/build/                   # Paper references
+```
+
 ## Installation
 
 1. Create and activate virtual environment:
@@ -17,14 +36,14 @@ pip install numpy matplotlib networkx
 
 ## Usage
 
-### Quick Default Mode
-Run with default settings (3x3_grid with anchor):
+### Quick Start (Default Mode)
+Run with default settings (3x3 grid with single anchor):
 ```bash
-python -m src.gaussian_bp_animation -d
+python main.py -d
 ```
 
 ### Interactive Mode
-Run the animation with graph type selection:
+Select graph type and parameters interactively:
 ```bash
-python -m src.gaussian_bp_animation
+python main.py
 ```

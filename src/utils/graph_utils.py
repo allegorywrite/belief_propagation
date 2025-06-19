@@ -210,7 +210,7 @@ class GraphFactory:
     
     @staticmethod
     def create_binary_tree() -> tuple[nx.Graph, int, int]:
-        """Create binary tree factor graph.
+        r"""Create binary tree factor graph.
         
         Tree structure:
                 x_0_1 (root)
@@ -313,7 +313,7 @@ class GraphFactory:
     
     @staticmethod
     def create_branching_tree() -> tuple[nx.Graph, int, int]:
-        """Create multi-branch tree.
+        r"""Create multi-branch tree.
         
         Structure:
                 x_1_2 (root)
