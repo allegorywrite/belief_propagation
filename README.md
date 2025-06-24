@@ -36,14 +36,32 @@ pip install numpy matplotlib networkx
 
 ## Usage
 
-### Quick Start (Default Mode)
-Run with default settings (3x3 grid with single anchor):
+### 基本実行
 ```bash
-python main.py -d
+source venv/bin/activate
+python main.py -g <graph_type> [options]
 ```
 
-### Interactive Mode
-Select graph type and parameters interactively:
+### CLI引数
+- `-g, --graph-type`: グラフタイプ (3x3_grid, chain, particle_terminal_chain等)
+- `-f, --fix-first-node`: 最初のノードを固定
+- `--no-viz`: 可視化なしで実行
+- `--particle-nodes`: パーティクルノードに変換するノード名 (例: x_0 x_2_2)
+
+### 実行例
 ```bash
+# 基本実行
+python main.py -g chain --no-viz
+
+# ノード固定
+python main.py -g 3x3_grid -f --no-viz
+
+# パーティクルノード追加
+python main.py -g chain --particle-nodes x_0_4 --no-viz
+
+# 複合
+python main.py -g 3x3_grid -f --particle-nodes x_2_2 --no-viz
+
+# インタラクティブモード
 python main.py
 ```

@@ -7,6 +7,7 @@ A modular implementation of Gaussian Belief Propagation with visualization
 
 from .gaussian_message import GaussianMessage
 from .gaussian_bp import GaussianBP
+from .particle_node import ParticleNode, SVGDOptimizer
 from .utils import GraphFactory, PositionManager, BPProblemSetup
 from .visualization import DynamicEdgeBPAnimation
 from .utils import (
@@ -20,7 +21,9 @@ from .utils import (
 
 __all__ = [
     'GaussianMessage',
-    'GaussianBP', 
+    'GaussianBP',
+    'ParticleNode', 
+    'SVGDOptimizer',
     'GraphFactory',
     'PositionManager',
     'DynamicEdgeBPAnimation',

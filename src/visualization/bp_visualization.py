@@ -16,14 +16,25 @@ class DynamicEdgeBPAnimation:
     """BP animation with edges connecting estimated positions."""
     
     def __init__(self, graph_type="3x3_grid", fix_single_node=False, 
-                 relative_weight=1.0, smoothness_weight=0.1, anchor_weight=10000.0):
+                 relative_weight=1.0, smoothness_weight=0.1, anchor_weight=10000.0,
+                 particle_nodes=None, no_message_animation=False, 
+                 no_variance_display=False, no_error_window=False, grid_size=None):
         self.graph_type = graph_type
         self.fix_single_node = fix_single_node
+        self.grid_size = grid_size
         
         # Factor weights
         self.relative_weight = relative_weight
         self.smoothness_weight = smoothness_weight
         self.anchor_weight = anchor_weight
+        
+        # Particle node configuration
+        self.particle_node_config = particle_nodes or self._get_default_particle_config()
+        
+        # Animation control options
+        self.no_message_animation = no_message_animation
+        self.no_variance_display = no_variance_display  
+        self.no_error_window = no_error_window
         
         self.create_graph()
         self.setup_positions()
@@ -35,22 +46,57 @@ class DynamicEdgeBPAnimation:
         
         plt.ion()
         
-        # Create two separate windows
+        # Create main visualization window
         self.fig, self.ax = plt.subplots(figsize=(10, 8))
         self.fig.suptitle('Gaussian BP Visualization')
         
-        # Convergence plot window - single plot for all errors
-        self.conv_fig, self.conv_ax = plt.subplots(1, 1, figsize=(8, 6))
-        self.conv_fig.suptitle('Error Convergence Analysis')
+        # Convergence plot window - single plot for all errors (only if not suppressed)
+        if not self.no_error_window:
+            self.conv_fig, self.conv_ax = plt.subplots(1, 1, figsize=(8, 6))
+            self.conv_fig.suptitle('Error Convergence Analysis')
+        else:
+            self.conv_fig, self.conv_ax = None, None
         
         # Convergence tracking
         self.iteration_history = []
         self.total_error_history = []
         self.edge_error_history = {}  # Per-edge error tracking
+    
+    def _get_default_particle_config(self):
+        """Get default particle node configuration for different graph types."""
+        defaults = {
+            "particle_terminal_chain": {
+                "x_4": {"num_particles": 50, "dim": 2, "noise_scale": 1.0}
+            },
+            "particle_terminal_3x3_grid": {
+                "x_2_2": {"num_particles": 50, "dim": 2, "noise_scale": 1.0}
+            }
+        }
+        return defaults.get(self.graph_type, {})
+    
+    def _setup_particle_nodes(self):
+        """Setup particle nodes based on configuration."""
+        for node_id, config in self.particle_node_config.items():
+            num_particles = config.get('num_particles', 50)
+            dim = config.get('dim', 2)
+            noise_scale = config.get('noise_scale', 1.0)  # Increased for origin-centered init
+            
+            # Initialize particles around origin (0, 0) instead of GT
+            initial_particles = np.random.normal(
+                loc=0.0,  # Origin-centered initialization
+                scale=noise_scale, 
+                size=(num_particles, dim)
+            )
+            
+            self.bp.add_particle_node(node_id, num_particles, dim, initial_particles)
+    
+    def _has_particle_nodes(self):
+        """Check if the BP instance has any particle nodes."""
+        return hasattr(self.bp, 'particle_nodes') and len(self.bp.particle_nodes) > 0
         
     def create_graph(self):
         """Create graph based on specified type."""
-        self.G, self.rows, self.cols = GraphFactory.create_graph(self.graph_type)
+        self.G, self.rows, self.cols = GraphFactory.create_graph(self.graph_type, self.grid_size)
     
     def setup_positions(self):
         """Setup node positions based on graph type."""
@@ -71,6 +117,9 @@ class DynamicEdgeBPAnimation:
             self.smoothness_weight, 
             self.anchor_weight
         )
+        
+        # Add particle nodes based on configuration
+        self._setup_particle_nodes()
         
         # Setup complete problem
         self.bp = self.problem_setup.setup_complete_problem(
@@ -143,6 +192,9 @@ class DynamicEdgeBPAnimation:
     
     def update_convergence_plots(self, iteration, message_change):
         """Update convergence plots - single plot with all edge errors and total error."""
+        if self.no_error_window or self.conv_ax is None:
+            return
+            
         edge_errors, total_error = self.compute_edge_errors()
         
         # Store history
@@ -273,9 +325,12 @@ class DynamicEdgeBPAnimation:
     def draw_current_estimates(self, estimated_positions):
         """Draw current position estimates and uncertainty ellipses."""
         for var in self.true_positions.keys():
-            # Always draw all nodes
-            if hasattr(self.bp, 'beliefs') and self.bp.beliefs and var in self.bp.beliefs:
-                # Node has BP belief - green circle
+            # Check if this is a particle node
+            if hasattr(self.bp, 'particle_nodes') and var in self.bp.particle_nodes:
+                self.draw_particle_node(var)
+            # Check if node has BP belief
+            elif hasattr(self.bp, 'beliefs') and self.bp.beliefs and var in self.bp.beliefs:
+                # Node has BP belief - draw as Gaussian node
                 belief = self.bp.beliefs[var]
                 mean = belief.mean
                 cov = belief.covariance
@@ -283,39 +338,112 @@ class DynamicEdgeBPAnimation:
                 self.ax.plot(mean[0], mean[1], 'o', color='lightblue', markersize=16,
                            alpha=0.8, markeredgecolor='navy', markeredgewidth=1)
                 
-                # Draw uncertainty ellipse
-                try:
-                    eigenvals, eigenvecs = np.linalg.eigh(cov)
-                    angle = np.degrees(np.arctan2(eigenvecs[1, 0], eigenvecs[0, 0]))
-                    width, height = 2 * np.sqrt(eigenvals)  # 1-sigma ellipse
-                    
-                    # Limit ellipse size for visibility
-                    width = min(width, 0.5)
-                    height = min(height, 0.5)
-                    width = max(width, 0.1)  # Minimum size
-                    height = max(height, 0.1)
-                    
-                    ellipse = Ellipse(mean, width, height, angle=angle,
-                                    fill=True, facecolor='lightblue', edgecolor='none', alpha=0.4)
-                    self.ax.add_patch(ellipse)
-                except Exception as e:
-                    # Fallback ellipse if calculation fails
-                    ellipse = Ellipse(mean, 0.2, 0.2, angle=0,
-                                    fill=True, facecolor='lightblue', edgecolor='none', alpha=0.4)
-                    self.ax.add_patch(ellipse)
+                # Draw uncertainty ellipse (only if not suppressed)
+                if not self.no_variance_display:
+                    try:
+                        eigenvals, eigenvecs = np.linalg.eigh(cov)
+                        angle = np.degrees(np.arctan2(eigenvecs[1, 0], eigenvecs[0, 0]))
+                        width, height = 2 * np.sqrt(eigenvals)  # 1-sigma ellipse
+                        
+                        # Limit ellipse size for visibility
+                        width = min(width, 0.5)
+                        height = min(height, 0.5)
+                        width = max(width, 0.1)  # Minimum size
+                        height = max(height, 0.1)
+                        
+                        ellipse = Ellipse(mean, width, height, angle=angle,
+                                        fill=True, facecolor='lightblue', edgecolor='none', alpha=0.4)
+                        self.ax.add_patch(ellipse)
+                    except Exception as e:
+                        # Fallback ellipse if calculation fails
+                        ellipse = Ellipse(mean, 0.2, 0.2, angle=0,
+                                        fill=True, facecolor='lightblue', edgecolor='none', alpha=0.4)
+                        self.ax.add_patch(ellipse)
             else:
                 # Node only has initial position - draw with initial uncertainty
                 est_pos = estimated_positions.get(var, self.positions[var])
                 self.ax.plot(est_pos[0], est_pos[1], 'o', color='lightblue', markersize=16,
                            alpha=0.6, markeredgecolor='navy', markeredgewidth=1)
                 
-                # Draw initial uncertainty ellipse
-                ellipse = Ellipse(est_pos, 0.3, 0.3, angle=0,
-                                fill=True, facecolor='lightblue', edgecolor='none', alpha=0.4)
+                # Draw initial uncertainty ellipse (only if not suppressed)
+                if not self.no_variance_display:
+                    ellipse = Ellipse(est_pos, 0.3, 0.3, angle=0,
+                                    fill=True, facecolor='lightblue', edgecolor='none', alpha=0.4)
+                    self.ax.add_patch(ellipse)
+    
+    def draw_particle_node(self, var):
+        """Draw particle node with individual particles and Gaussian approximation."""
+        particle_node = self.bp.particle_nodes[var]
+        particles = particle_node.get_particle_positions()
+        weights = particle_node.get_particle_weights()
+        
+        # Draw individual particles with size and color based on weights
+        # Normalize weights for visualization (scale particle sizes)
+        max_weight = np.max(weights)
+        min_weight = np.min(weights)
+        weight_range = max_weight - min_weight
+        
+        if weight_range > 0:
+            # Normalize weights to [0.2, 1.0] for size scaling
+            normalized_weights = 0.2 + 0.8 * (weights - min_weight) / weight_range
+            # Scale sizes based on weights (larger particles for higher weights)
+            sizes = 50 * normalized_weights
+            # Color intensity based on weights
+            colors = weights / max_weight if max_weight > 0 else np.ones_like(weights)
+        else:
+            # All weights are equal
+            sizes = np.full_like(weights, 20)
+            colors = np.ones_like(weights)
+        
+        # Draw particles with weight-based visualization
+        scatter = self.ax.scatter(particles[:, 0], particles[:, 1], 
+                                c=colors, s=sizes, alpha=0.7, marker='o',
+                                cmap='Reds', edgecolors='darkred', linewidths=0.5)
+        
+        # Get Gaussian approximation for this particle node
+        gaussian_approx = particle_node.compute_gaussian_approximation()
+        mean = gaussian_approx.mean
+        cov = gaussian_approx.covariance
+        
+        # Draw mean position as larger marker (different from Gaussian nodes)
+        self.ax.plot(mean[0], mean[1], 'o', color='orange', markersize=18,
+                   alpha=0.9, markeredgecolor='darkred', markeredgewidth=2)
+        
+        # Draw uncertainty ellipse for Gaussian approximation (only if not suppressed)
+        if not self.no_variance_display:
+            try:
+                eigenvals, eigenvecs = np.linalg.eigh(cov)
+                angle = np.degrees(np.arctan2(eigenvecs[1, 0], eigenvecs[0, 0]))
+                width, height = 2 * np.sqrt(eigenvals)  # 1-sigma ellipse
+                
+                # Limit ellipse size for visibility
+                width = min(width, 0.8)
+                height = min(height, 0.8)
+                width = max(width, 0.1)  # Minimum size
+                height = max(height, 0.1)
+                
+                ellipse = Ellipse(mean, width, height, angle=angle,
+                                fill=True, facecolor='orange', edgecolor='darkred', 
+                                alpha=0.3, linewidth=1)
+                self.ax.add_patch(ellipse)
+            except Exception as e:
+                # Fallback ellipse if calculation fails
+                ellipse = Ellipse(mean, 0.2, 0.2, angle=0,
+                                fill=True, facecolor='orange', edgecolor='darkred', 
+                                alpha=0.3, linewidth=1)
                 self.ax.add_patch(ellipse)
     
     def animate_message_propagation(self, iteration):
         """Animate messages moving along dynamic edges."""
+        if self.no_message_animation:
+            # Skip animation, just draw current state briefly
+            estimated_positions = self.get_current_estimated_positions()
+            self.draw_base_elements(f'Message Propagation - Iteration {iteration}', estimated_positions)
+            self.draw_current_estimates(estimated_positions)
+            plt.draw()
+            plt.pause(0.1)  # Brief pause
+            return
+            
         estimated_positions = self.get_current_estimated_positions()
         connections = self.get_variable_connections()
         
@@ -404,21 +532,22 @@ class DynamicEdgeBPAnimation:
                 self.ax.plot(pos[0], pos[1], 'o', color='lightblue', markersize=16,
                            alpha=0.8, markeredgecolor='navy', markeredgewidth=1)
                 
-                # Draw uncertainty ellipse
-                try:
-                    eigenvals, eigenvecs = np.linalg.eigh(cov)
-                    angle = np.degrees(np.arctan2(eigenvecs[1, 0], eigenvecs[0, 0]))
-                    width, height = 2 * np.sqrt(eigenvals)  # 1-sigma ellipse
-                    
-                    # Limit ellipse size
-                    width = min(width, 0.5)
-                    height = min(height, 0.5)
-                    
-                    ellipse = Ellipse(pos, width, height, angle=angle,
-                                    fill=True, facecolor='lightblue', edgecolor='none', alpha=0.4)
-                    self.ax.add_patch(ellipse)
-                except:
-                    pass
+                # Draw uncertainty ellipse (only if not suppressed)
+                if not self.no_variance_display:
+                    try:
+                        eigenvals, eigenvecs = np.linalg.eigh(cov)
+                        angle = np.degrees(np.arctan2(eigenvecs[1, 0], eigenvecs[0, 0]))
+                        width, height = 2 * np.sqrt(eigenvals)  # 1-sigma ellipse
+                        
+                        # Limit ellipse size
+                        width = min(width, 0.5)
+                        height = min(height, 0.5)
+                        
+                        ellipse = Ellipse(pos, width, height, angle=angle,
+                                        fill=True, facecolor='lightblue', edgecolor='none', alpha=0.4)
+                        self.ax.add_patch(ellipse)
+                    except:
+                        pass
         
         # Add info
         info_text = f'Iteration: {iteration}\nError: {error:.3f}'
@@ -446,7 +575,7 @@ class DynamicEdgeBPAnimation:
         # Show initial state
         self.draw_current_state("Initial State", 0, 0.0)
         
-        max_iterations = 8
+        max_iterations = 20
         
         try:
             for iteration in range(max_iterations):
@@ -455,9 +584,13 @@ class DynamicEdgeBPAnimation:
                 # Animate message propagation
                 self.animate_message_propagation(iteration + 1)
                 
-                # Update messages
-                change = self.bp.update_messages()
-                print(f"  Message change: {change:.6f}")
+                # Update messages (use particle-aware version if needed)
+                if self._has_particle_nodes():
+                    change = self.bp.update_messages_with_particles()
+                    print(f"  Message change (with particles): {change:.6f}")
+                else:
+                    change = self.bp.update_messages()
+                    print(f"  Message change: {change:.6f}")
                 
                 # Debug: Show which factors are active
                 if iteration == 0:  # Only show on first iteration
@@ -466,9 +599,18 @@ class DynamicEdgeBPAnimation:
                         precision = self.bp.factor_potentials[factor]['precision']
                         max_precision = np.max(precision)
                         print(f"    {factor}: max_precision={max_precision:.6f}")
+                    
+                    # Show particle nodes if present
+                    if hasattr(self.bp, 'particle_nodes') and self.bp.particle_nodes:
+                        print(f"  Particle nodes:")
+                        for node_id, particle_node in self.bp.particle_nodes.items():
+                            print(f"    {node_id}: {particle_node.num_particles} particles")
                 
-                # Update beliefs
-                self.bp.compute_beliefs()
+                # Update beliefs (use particle-aware version if needed)
+                if self._has_particle_nodes():
+                    self.bp.compute_beliefs_with_particles()
+                else:
+                    self.bp.compute_beliefs()
                 
                 # Animate belief update
                 self.animate_belief_update(iteration + 1)
@@ -495,3 +637,63 @@ class DynamicEdgeBPAnimation:
         except KeyboardInterrupt:
             print("\nAnimation interrupted by user")
             plt.show(block=True)
+    
+    def run_without_animation(self, max_iterations=8, convergence_threshold=1e-6):
+        """Run belief propagation without visual animation."""
+        print(f"=== Running Gaussian BP ({self.graph_type}) ===")
+        print(f"• Graph type: {self.graph_type}")
+        print(f"• Variables: {len([n for n in self.G.nodes() if not n.startswith('f_') and not n.startswith('obs_')])}")
+        print(f"• Fix single node: {'Yes' if self.fix_single_node else 'No'}")
+        
+        # Initialize tracking
+        iteration_history = []
+        error_history = []
+        
+        for iteration in range(max_iterations):
+            print(f"\nIteration {iteration + 1}")
+            
+            # Update messages (same logic as animated version)
+            if self._has_particle_nodes():
+                change = self.bp.update_messages_with_particles()
+                print(f"  Message change (with particles): {change:.6f}")
+            else:
+                change = self.bp.update_messages()
+                print(f"  Message change: {change:.6f}")
+            
+            # Update beliefs (same logic as animated version)
+            if self._has_particle_nodes():
+                self.bp.compute_beliefs_with_particles()
+            else:
+                self.bp.compute_beliefs()
+            
+            # Calculate error (same as animated version)
+            total_error = 0.0
+            for var, true_pos in self.true_positions.items():
+                if var in self.bp.beliefs:
+                    estimated = self.bp.beliefs[var].mean
+                    error = np.linalg.norm(estimated - true_pos)
+                    total_error += error
+            
+            print(f"  Total error: {total_error:.3f}")
+            
+            # Store history
+            iteration_history.append(iteration + 1)
+            error_history.append(total_error)
+            
+            # Check convergence
+            if change < convergence_threshold:
+                print(f"  Converged at iteration {iteration + 1}")
+                break
+        
+        print(f"\nFinal Results:")
+        print(f"• Total iterations: {len(iteration_history)}")
+        print(f"• Final error: {error_history[-1]:.6f}")
+        print(f"• Final message change: {change:.6f}")
+        
+        # Return results
+        return {
+            'iterations': iteration_history,
+            'errors': error_history,
+            'final_beliefs': self.bp.beliefs.copy() if hasattr(self.bp, 'beliefs') else {},
+            'converged': change < convergence_threshold
+        }
